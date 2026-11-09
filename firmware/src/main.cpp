@@ -7,12 +7,17 @@
 // BLE (contract in docs/BLE_PROTOCOL.md): after every decision, i.e. once per second, a notification with
 //   {"state":"calm","probs":{"calm":0.91,"fast":0.05,"not_attached":0.03,"shaking":0.01}}
 // The regular rate also tells the monitoring page that the board is alive.
+// Wi-Fi: the board runs its own hotspot and serves web_page.h at http://192.168.4.1/;
+//   /data returns the last 8 s of acceleration and the current prediction as JSON.
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include "model.h"
+#include "web_page.h"
 
 const int SDA_PIN = 10;
 const int SCL_PIN = 11;
@@ -22,6 +27,8 @@ const int SMOOTH_DECISIONS = 3;  // average the probabilities of the last 3 wind
 const char* BLE_DEVICE_NAME = "ESP32-BREATH";
 const char* BLE_SERVICE_UUID = "8e7a1f20-1d0b-4f6a-9c3e-2b5c7d9e1001";  // must match monitor/app.js
 const char* BLE_STATE_UUID = "8e7a1f21-1d0b-4f6a-9c3e-2b5c7d9e1001";
+const char* WIFI_NAME = "ESP32-BREATH";
+const char* WIFI_PASSWORD = nullptr;  // open network, chosen for an easy demo (WPA2 would need 8+ characters)
 const float LOG_EPS = 1e-6f;  // "EPS" is already a macro in the ESP32 headers
 
 static_assert(N_FEATURES == 6, "computeFeatures() must produce the features listed in features.py");
@@ -37,6 +44,11 @@ long samplesSeen = 0;
 float recentProbabilities[SMOOTH_DECISIONS][N_CLASSES];
 int decisionsSeen = 0;
 BLECharacteristic* stateCharacteristic = nullptr;
+WebServer webServer(80);
+// Latest decision, kept for the web page
+int lastStateIndex = -1;
+float lastSmoothed[N_CLASSES] = {};
+float lastBreathRateBpm = 0;
 
 class RestartAdvertisingOnDisconnect : public BLEServerCallbacks {
   // Advertising stops when a client connects; restart it so the page can reconnect
@@ -70,6 +82,44 @@ void setupBle() {
   advertising->addServiceUUID(BLE_SERVICE_UUID);
   advertising->setScanResponse(true);
   BLEDevice::startAdvertising();
+}
+
+void handleData() {
+  // The last 8 s (or fewer after a reset) of ax, ay, az, oldest first
+  int count = min((long)WINDOW, samplesSeen);
+  String json;
+  json.reserve(10000);
+  json += "{\"uptime_ms\":";
+  json += millis();
+  json += ",\"state\":\"";
+  json += lastStateIndex >= 0 ? CLASS_NAMES[lastStateIndex] : "";
+  json += "\",\"breath_rate_bpm\":";
+  json += String(lastBreathRateBpm, 1);
+  json += ",\"probs\":{";
+  for (int c = 0; c < N_CLASSES; c++) {
+    if (c > 0) json += ",";
+    json += "\"" + String(CLASS_NAMES[c]) + "\":" + String(lastSmoothed[c], 3);
+  }
+  json += "},\"axes\":[";
+  for (int axis = 0; axis < 3; axis++) {
+    json += axis > 0 ? ",[" : "[";
+    for (int i = 0; i < count; i++) {
+      int index = (writeIndex - count + i + WINDOW) % WINDOW;
+      if (i > 0) json += ",";
+      json += String(samples[index][axis], 3);
+    }
+    json += "]";
+  }
+  json += "]}";
+  webServer.send(200, "application/json", json);
+}
+
+void setupWifi() {
+  WiFi.softAP(WIFI_NAME, WIFI_PASSWORD);
+  webServer.on("/", []() { webServer.send(200, "text/html", WEB_PAGE); });
+  webServer.on("/data", handleData);
+  webServer.begin();
+  Serial.printf("# Wi-Fi hotspot %s, page at http://%s/\n", WIFI_NAME, WiFi.softAPIP().toString().c_str());
 }
 
 void setLed(uint8_t r, uint8_t g, uint8_t b) {
@@ -235,6 +285,9 @@ void classifyWindow() {
   }
   showState(CLASS_NAMES[bestClass]);
   publishState(bestClass, smoothed);
+  lastStateIndex = bestClass;
+  memcpy(lastSmoothed, smoothed, sizeof(smoothed));
+  lastBreathRateBpm = features[4];
 
   Serial.printf("# P,%lu", millis());
   for (int f = 0; f < N_FEATURES; f++) Serial.printf(",%.5f", features[f]);
@@ -261,11 +314,13 @@ void setup() {
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   setupBle();
+  setupWifi();
   setLed(10, 10, 10);  // dim white until the first window is full
   Serial.println("t_ms,ax,ay,az,gx,gy,gz");
 }
 
 void loop() {
+  webServer.handleClient();
   static unsigned long nextSampleUs = micros();
   if ((long)(micros() - nextSampleUs) < 0) return;
   nextSampleUs += SAMPLE_PERIOD_US;
