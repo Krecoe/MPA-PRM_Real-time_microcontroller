@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Breathing monitor</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #111; color: #eee; max-width: 900px; margin: auto; }
+  h1 { font-size: 1.3em; margin: 0 0 12px; }
+  button { font-size: 1em; padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; margin-right: 8px; }
+  #connectButton { background: #2d7be5; color: white; }
+  #silenceButton { background: #555; color: white; }
+  #connection { margin: 10px 0; color: #aaa; }
+  #state { font-size: 2.2em; font-weight: bold; padding: 18px; border-radius: 12px; text-align: center; margin: 12px 0; background: #333; }
+  #since { text-align: center; color: #aaa; margin-top: -6px; }
+  #alarm { display: none; font-size: 1.3em; font-weight: bold; padding: 14px; border-radius: 12px; background: #c00; color: white; text-align: center; margin: 12px 0; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.55; } }
+  canvas { width: 100%; height: 70px; background: #222; border-radius: 8px; }
+  .legend span { display: inline-block; margin-right: 14px; font-size: 0.9em; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .limits { margin: 14px 0; color: #ccc; }
+  .limits input { width: 60px; font-size: 1em; }
+  #log { font-family: monospace; font-size: 0.85em; color: #bbb; max-height: 220px; overflow-y: auto; background: #1a1a1a; padding: 8px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<h1>Breathing monitor (ESP32-S3 + MPU-6050 over BLE)</h1>
+<button id="connectButton">Connect</button>
+<button id="silenceButton">Silence alarm</button>
+<div id="connection">Not connected. Use Chrome or Edge with Bluetooth on (not iPhone).</div>
+
+<div id="alarm"></div>
+<div id="state">-</div>
+<div id="since"></div>
+
+<h3>Timeline (last 5 minutes)</h3>
+<canvas id="timeline" width="900" height="70"></canvas>
+<div class="legend">
+  <span><i style="background:#2ecc40"></i>calm breathing</span>
+  <span><i style="background:#ff4136"></i>fast breathing</span>
+  <span><i style="background:#0074d9"></i>not attached</span>
+  <span><i style="background:#f012be"></i>shaking</span>
+  <span><i style="background:#444"></i>disconnected</span>
+</div>
+
+<div class="limits">
+  Alarm when fast breathing lasts more than <input id="fastLimit" type="number" value="20" min="1"> s,
+  not attached more than <input id="notAttachedLimit" type="number" value="30" min="1"> s,
+  or no data for <input id="silenceLimit" type="number" value="5" min="1"> s.
+</div>
+
+<h3>Event log</h3>
+<div id="log"></div>
+
+<script>
+// Must match BLE_SERVICE_UUID and BLE_STATE_UUID in firmware/src/main.cpp
+const SERVICE_UUID = "6b2f0d10-3c1e-4c8a-9a51-2f6e7b8c9d01";
+const STATE_UUID = "6b2f0d11-3c1e-4c8a-9a51-2f6e7b8c9d01";
+const TIMELINE_SECONDS = 300;
+
+const STATES = {
+  calm: { label: "Calm breathing", color: "#2ecc40" },
+  fast: { label: "Fast breathing", color: "#ff4136" },
+  not_attached: { label: "Not attached", color: "#0074d9" },
+  shaking: { label: "Shaking", color: "#f012be" },
+  disconnected: { label: "Disconnected", color: "#444" },
+};
+
+let device = null;
+let currentState = "disconnected";
+let stateSince = Date.now();
+let lastMessageTime = 0;
+let userDisconnected = false;
+let silenced = false;
+const history = [];  // {time, state}: the state that started at that time
+
+const $ = (id) => document.getElementById(id);
+
+function log(text) {
+  const line = document.createElement("div");
+  line.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  $("log").prepend(line);
+}
+
+function setState(state) {
+  if (state === currentState) return;
+  currentState = state;
+  stateSince = Date.now();
+  history.push({ time: stateSince, state });
+  silenced = false;  // a new state may need a new alarm
+  const info = STATES[state] || { label: state, color: "#333" };
+  $("state").textContent = info.label;
+  $("state").style.background = info.color;
+  log(`state: ${info.label}`);
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    alert("Web Bluetooth is not available. Use Chrome or Edge on Android, Windows or macOS over HTTPS.");
+    return;
+  }
+  try {
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE_UUID] }] });
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+    userDisconnected = false;
+    await startNotifications();
+  } catch (error) {
+    log(`connect failed: ${error.message}`);
+  }
+}
+
+async function startNotifications() {
+  $("connection").textContent = `Connecting to ${device.name} ...`;
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(SERVICE_UUID);
+  const characteristic = await service.getCharacteristic(STATE_UUID);
+  characteristic.addEventListener("characteristicvaluechanged", (event) => {
+    lastMessageTime = Date.now();
+    setState(new TextDecoder().decode(event.target.value).trim());
+  });
+  await characteristic.startNotifications();
+  lastMessageTime = Date.now();
+  $("connection").textContent = `Connected to ${device.name}`;
+  $("connectButton").textContent = "Disconnect";
+  log(`connected to ${device.name}`);
+}
+
+async function onDisconnected() {
+  setState("disconnected");
+  $("connection").textContent = "Connection lost - trying to reconnect ...";
+  $("connectButton").textContent = "Connect";
+  log("connection lost");
+  // Keep trying to reconnect: the board restarts advertising after a disconnect
+  while (device && !device.gatt.connected && !userDisconnected) {
+    try {
+      await startNotifications();
+    } catch (error) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+}
+
+$("connectButton").addEventListener("click", () => {
+  if (device && device.gatt.connected) {
+    userDisconnected = true;
+    device.gatt.disconnect();
+    $("connection").textContent = "Disconnected by user";
+  } else {
+    connect();
+  }
+});
+
+$("silenceButton").addEventListener("click", () => { silenced = true; });
+
+// --- Alarms ---
+let audioContext = null;
+function beep() {
+  // Browsers allow sound only after a user gesture; the Connect click provides one
+  audioContext = audioContext || new AudioContext();
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.frequency.value = 880;
+  gain.gain.value = 0.2;
+  oscillator.connect(gain).connect(audioContext.destination);
+  oscillator.start();
+  oscillator.stop(audioContext.currentTime + 0.3);
+}
+
+function currentAlarm() {
+  if (!device) return null;  // nothing to watch before the first connection
+  const secondsInState = (Date.now() - stateSince) / 1000;
+  const secondsWithoutData = (Date.now() - lastMessageTime) / 1000;
+  if (currentState === "disconnected" || secondsWithoutData > Number($("silenceLimit").value)) {
+    return userDisconnected ? null : "CONNECTION LOST";
+  }
+  if (currentState === "fast" && secondsInState > Number($("fastLimit").value)) {
+    return `FAST BREATHING for ${secondsInState.toFixed(0)} s`;
+  }
+  if (currentState === "not_attached" && secondsInState > Number($("notAttachedLimit").value)) {
+    return `SENSOR NOT ATTACHED for ${secondsInState.toFixed(0)} s`;
+  }
+  return null;
+}
+
+let lastAlarm = null;
+setInterval(() => {
+  const alarm = currentAlarm();
+  if (alarm !== lastAlarm && alarm && !lastAlarm) log(`ALARM: ${alarm}`);
+  lastAlarm = alarm;
+  $("alarm").style.display = alarm ? "block" : "none";
+  $("alarm").textContent = alarm ? `⚠ ${alarm}` + (silenced ? " (silenced)" : "") : "";
+  if (alarm && !silenced) {
+    beep();
+    if (navigator.vibrate) navigator.vibrate(300);
+  }
+  if (device) $("since").textContent = `for ${((Date.now() - stateSince) / 1000).toFixed(0)} s`;
+  drawTimeline();
+}, 1000);
+
+// --- Timeline ---
+function drawTimeline() {
+  const canvas = $("timeline");
+  const context = canvas.getContext("2d");
+  const now = Date.now();
+  const start = now - TIMELINE_SECONDS * 1000;
+  const toX = (time) => ((time - start) / (TIMELINE_SECONDS * 1000)) * canvas.width;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < history.length; i++) {
+    const segmentEnd = i + 1 < history.length ? history[i + 1].time : now;
+    if (segmentEnd < start) continue;
+    context.fillStyle = (STATES[history[i].state] || { color: "#333" }).color;
+    const x = Math.max(toX(history[i].time), 0);
+    context.fillRect(x, 0, toX(segmentEnd) - x, canvas.height - 18);
+  }
+  context.fillStyle = "#aaa";
+  context.font = "12px system-ui";
+  for (let minutesAgo = 5; minutesAgo >= 0; minutesAgo--) {
+    const x = toX(now - minutesAgo * 60000);
+    context.fillText(minutesAgo === 0 ? "now" : `-${minutesAgo} min`, Math.min(Math.max(x - 14, 0), canvas.width - 30), canvas.height - 4);
+  }
+}
+</script>
+</body>
+</html>

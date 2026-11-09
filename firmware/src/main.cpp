@@ -4,9 +4,14 @@
 //   raw sample lines:  t_ms,ax,ay,az,gx,gy,gz     (read by record.py)
 //   prediction lines:  # P,t_ms,feature...,probability...,state
 //   timing lines:      # T,microseconds for features + network
+// BLE: the smoothed state is sent as UTF-8 text (calm, fast, not_attached, shaking) in a notification
+// after every decision, so the monitoring page also knows the board is alive.
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLE2902.h>
 #include "model.h"
 
 const int SDA_PIN = 10;
@@ -14,6 +19,9 @@ const int SCL_PIN = 11;
 const int LED_PIN = 48;
 const unsigned long SAMPLE_PERIOD_US = 1000000UL / SAMPLE_RATE_HZ;
 const int SMOOTH_DECISIONS = 3;  // average the probabilities of the last 3 windows (3 s) to avoid flicker
+const char* BLE_DEVICE_NAME = "ESP32-Breath";
+const char* BLE_SERVICE_UUID = "6b2f0d10-3c1e-4c8a-9a51-2f6e7b8c9d01";  // must match the monitoring page
+const char* BLE_STATE_UUID = "6b2f0d11-3c1e-4c8a-9a51-2f6e7b8c9d01";
 const float LOG_EPS = 1e-6f;  // "EPS" is already a macro in the ESP32 headers
 
 static_assert(N_FEATURES == 6, "computeFeatures() must produce the features listed in features.py");
@@ -28,6 +36,30 @@ int writeIndex = 0;
 long samplesSeen = 0;
 float recentProbabilities[SMOOTH_DECISIONS][N_CLASSES];
 int decisionsSeen = 0;
+BLECharacteristic* stateCharacteristic = nullptr;
+
+class RestartAdvertisingOnDisconnect : public BLEServerCallbacks {
+  // Advertising stops when a client connects; restart it so the page can reconnect
+  void onDisconnect(BLEServer* server) override {
+    BLEDevice::startAdvertising();
+  }
+};
+
+void setupBle() {
+  BLEDevice::init(BLE_DEVICE_NAME);
+  BLEServer* server = BLEDevice::createServer();
+  server->setCallbacks(new RestartAdvertisingOnDisconnect());
+  BLEService* service = server->createService(BLE_SERVICE_UUID);
+  stateCharacteristic = service->createCharacteristic(
+      BLE_STATE_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  stateCharacteristic->addDescriptor(new BLE2902());  // lets clients subscribe to notifications
+  stateCharacteristic->setValue("starting");
+  service->start();
+  BLEAdvertising* advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(BLE_SERVICE_UUID);
+  advertising->setScanResponse(true);
+  BLEDevice::startAdvertising();
+}
 
 void setLed(uint8_t r, uint8_t g, uint8_t b) {
   rgbLedWrite(LED_PIN, r, g, b);
@@ -194,6 +226,8 @@ void classifyWindow() {
     }
   }
   showState(CLASS_NAMES[bestClass]);
+  stateCharacteristic->setValue(CLASS_NAMES[bestClass]);
+  stateCharacteristic->notify();
 
   Serial.printf("# P,%lu", millis());
   for (int f = 0; f < N_FEATURES; f++) Serial.printf(",%.5f", features[f]);
@@ -219,6 +253,7 @@ void setup() {
   mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  setupBle();
   setLed(10, 10, 10);  // dim white until the first window is full
   Serial.println("t_ms,ax,ay,az,gx,gy,gz");
 }
