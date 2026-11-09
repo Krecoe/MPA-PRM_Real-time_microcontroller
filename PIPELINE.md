@@ -34,6 +34,29 @@ Items marked **(open)** still need a decision. See "Open questions" at the botto
 
 Tilting the board during hand movement gives as much rotation as shaking, and per-axis features depend on orientation; the acceleration-magnitude spread does not (0.28–0.75 m/s² for movement vs. 2.50–3.03 m/s² for shaking). Caveat: the feature was chosen on the same 6 sessions, so it still needs confirming on new recordings.
 
+### Four classes (18 sessions of 60 s: calm 3, fast 3, movement 5, shaking 5, still 2; leave-one-session-out)
+Features (all independent of how the board is oriented), in `features.py`:
+- `log_acc_total_std`: log of the total acceleration amplitude over 8 s (square root of the covariance trace)
+- `log_acc_mag_std_2s`, `high_freq_share_2s`: amplitude of the acceleration magnitude and its share of power above 3 Hz over the **last 2 s**, so movement vs. shaking can react faster
+- `breath_band_share`, `breath_rate_bpm`: share of power in 0.125–1.5 Hz and the strongest frequency, along the principal direction of acceleration change (breathing tilts the chest along one direction)
+- `log_gyro_mean`: mean rotation speed
+
+| Model | all 6 | without gyro | without high-freq share | amplitudes only |
+|---|---|---|---|---|
+| logistic regression (baseline) | 0.775 | 0.771 | 0.776 | 0.510 |
+| **MLP, 16 hidden units** | **0.878** | 0.877 | 0.814 | 0.682 |
+| random forest, 200 trees | 0.868 | 0.853 | 0.794 | 0.687 |
+
+Chosen: MLP with 16 hidden units on all 6 features, with balanced sample weights. `train.py` run: accuracy 0.884. Per class:
+
+| | calm | fast | not attached | shaking |
+|---|---|---|---|---|
+| recall | 0.881 | 0.855 | 0.887 | 0.898 |
+
+Weakest held-out sessions: `movement_smooth` 0.51, `shaking_gentle` 0.57, `calm_standing` 0.64, `fast_standing` 0.70. Each is the only session of its kind, so nothing similar is in training when it is held out.
+
+On the board: features + network take 43 ms per decision. Board vs. Python on the same windows: features within 4e-3, probabilities within 6e-3.
+
 ## 4. Training and evaluation (Python)
 - Split by **whole recording** (session), not by window.
 - Baseline: logistic regression or a small decision tree on the features (scikit-learn).

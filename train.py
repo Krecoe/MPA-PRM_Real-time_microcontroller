@@ -7,10 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 
 from features import FEATURE_NAMES, SAMPLE_RATE_HZ, STEP, WINDOW, window_features
 
@@ -32,8 +33,14 @@ def load_sessions():
     return sessions, classes, features
 
 
-def make_model():
-    return make_pipeline(StandardScaler(), LogisticRegression(class_weight="balanced", max_iter=1000))
+HIDDEN_UNITS = 16
+
+
+def train_model(features, classes):
+    # Small network on hand-made features (the task's tip); a logistic-regression baseline scored lower,
+    # see PIPELINE.md. "not attached" has more sessions than the other classes, so weight them evenly.
+    model = make_pipeline(StandardScaler(), MLPClassifier((HIDDEN_UNITS,), max_iter=3000, random_state=0))
+    return model.fit(features, classes, mlpclassifier__sample_weight=compute_sample_weight("balanced", classes))
 
 
 sessions, classes, features = load_sessions()
@@ -43,7 +50,7 @@ print(f"{len(features)} windows from {len(set(sessions))} sessions, classes: {di
 predicted = np.empty_like(classes)
 for session in np.unique(sessions):
     is_test = sessions == session
-    model = make_model().fit(features[~is_test], classes[~is_test])
+    model = train_model(features[~is_test], classes[~is_test])
     predicted[is_test] = model.predict(features[is_test])
     print(f"  {session:40s} accuracy {np.mean(predicted[is_test] == classes[is_test]):.3f}")
 
@@ -54,13 +61,9 @@ print("Confusion matrix (rows = true, columns = predicted):")
 print(pd.DataFrame(confusion_matrix(classes, predicted, labels=labels), index=labels, columns=labels))
 
 # Final model on all sessions, exported as plain arrays for the firmware
-model = make_model().fit(features, classes)
-scaler, classifier = model[0], model[1]
-coef, intercept = classifier.coef_, classifier.intercept_
-if len(classifier.classes_) == 2:
-    # sklearn stores one row for binary problems; expand to one row per class so the firmware always uses softmax
-    coef = np.vstack([-coef[0] / 2, coef[0] / 2])
-    intercept = np.array([-intercept[0] / 2, intercept[0] / 2])
+model = train_model(features, classes)
+scaler, network = model[0], model[1]
+assert len(network.classes_) > 2, "the firmware expects a softmax output, which sklearn uses only for 3+ classes"
 
 
 def c_array(values):
@@ -73,13 +76,17 @@ const int SAMPLE_RATE_HZ = {SAMPLE_RATE_HZ};
 const int WINDOW = {WINDOW};
 const int STEP = {STEP};
 const int N_FEATURES = {len(FEATURE_NAMES)};
-const int N_CLASSES = {len(classifier.classes_)};
-const char* const CLASS_NAMES[N_CLASSES] = {{{", ".join(f'"{c}"' for c in classifier.classes_)}}};
+const int N_HIDDEN = {HIDDEN_UNITS};
+const int N_CLASSES = {len(network.classes_)};
+const char* const CLASS_NAMES[N_CLASSES] = {{{", ".join(f'"{c}"' for c in network.classes_)}}};
 const float FEATURE_MEAN[N_FEATURES] = {c_array(scaler.mean_)};
 const float FEATURE_SCALE[N_FEATURES] = {c_array(scaler.scale_)};
-const float WEIGHTS[N_CLASSES][N_FEATURES] = {c_array(coef)};
-const float BIAS[N_CLASSES] = {c_array(intercept)};
+// hidden = relu(HIDDEN_WEIGHTS * standardized_features + HIDDEN_BIAS), probabilities = softmax(OUTPUT_WEIGHTS * hidden + OUTPUT_BIAS)
+const float HIDDEN_WEIGHTS[N_HIDDEN][N_FEATURES] = {c_array(network.coefs_[0].T)};
+const float HIDDEN_BIAS[N_HIDDEN] = {c_array(network.intercepts_[0])};
+const float OUTPUT_WEIGHTS[N_CLASSES][N_HIDDEN] = {c_array(network.coefs_[1].T)};
+const float OUTPUT_BIAS[N_CLASSES] = {c_array(network.intercepts_[1])};
 """
 Path("firmware/include").mkdir(parents=True, exist_ok=True)
 Path("firmware/include/model.h").write_text(header)
-print(f"\nExported model with classes {[str(c) for c in classifier.classes_]} to firmware/include/model.h")
+print(f"\nExported model with classes {[str(c) for c in network.classes_]} to firmware/include/model.h")

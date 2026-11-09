@@ -26,8 +26,11 @@ def read_array(header_text, name):
 header_text = Path("firmware/include/model.h").read_text()
 feature_mean = read_array(header_text, "FEATURE_MEAN")
 feature_scale = read_array(header_text, "FEATURE_SCALE")
-bias = read_array(header_text, "BIAS")
-weights = read_array(header_text, "WEIGHTS").reshape(len(bias), -1)
+b1 = read_array(header_text, "HIDDEN_BIAS")
+b2 = read_array(header_text, "OUTPUT_BIAS")
+w1 = read_array(header_text, "HIDDEN_WEIGHTS").reshape(len(b1), -1)
+w2 = read_array(header_text, "OUTPUT_WEIGHTS").reshape(len(b2), -1)
+timings_us = []
 
 raw_samples = []
 comparisons = []
@@ -45,9 +48,12 @@ with serial.Serial(PORT, 115200, timeout=1) as port:
             board_features = np.array(parts[2:2 + n_features], dtype=float)
             board_probabilities = np.array(parts[2 + n_features:-1], dtype=float)
             python_features = window_features(np.array(raw_samples[-WINDOW:]))
-            logits = weights @ ((python_features - feature_mean) / feature_scale) + bias
+            hidden = np.maximum(w1 @ ((python_features - feature_mean) / feature_scale) + b1, 0)
+            logits = w2 @ hidden + b2
             python_probabilities = np.exp(logits - logits.max()) / np.exp(logits - logits.max()).sum()
             comparisons.append((board_features, python_features, board_probabilities, python_probabilities, parts[-1]))
+        elif line.startswith("# T,"):
+            timings_us.append(int(line.split(",")[1]))
 
 print(f"Compared {len(comparisons)} windows")
 for board_f, python_f, board_p, python_p, state in comparisons:
@@ -56,3 +62,4 @@ for board_f, python_f, board_p, python_p, state in comparisons:
 max_feature_diff = max(np.abs(b - p).max() for b, p, _, _, _ in comparisons)
 max_probability_diff = max(np.abs(b - p).max() for _, _, b, p, _ in comparisons)
 print(f"Max feature difference: {max_feature_diff:.2e}, max probability difference: {max_probability_diff:.2e}")
+print(f"Features + network on the board: mean {np.mean(timings_us) / 1000:.1f} ms, max {np.max(timings_us) / 1000:.1f} ms")
