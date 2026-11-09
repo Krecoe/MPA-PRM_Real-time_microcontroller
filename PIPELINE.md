@@ -4,7 +4,7 @@ Items marked **(open)** still need a decision. See "Open questions" at the botto
 
 ## 0. Hardware
 - ESP32-S3 N16R8 and MPU-6050 (HW-123) on I2C: SDA = GPIO10, SCL = GPIO11, VCC = 3.3 V, address 0x68.
-- On-board RGB LED: usually an addressable WS2812 on GPIO48 (GPIO38 on some board revisions). **Verify on the board.**
+- On-board RGB LED: addressable WS2812 on **GPIO48** (verified on our board).
 - Tip from the task: move the whole breadboard, and press it against the chest for breathing.
 
 ## 1. Sensor check (firmware)
