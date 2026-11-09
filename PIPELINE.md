@@ -19,10 +19,20 @@ Items marked **(open)** still need a decision. See "Open questions" at the botto
 - Record several different sessions per class (different people, postures and positions).
 
 ## 3. Features (Python, mirrored later in C++)
-- Sliding windows, e.g. 4–8 s with 50 % overlap **(open)**. Breathing is slow (about 0.2–1 Hz), so windows must cover several breaths.
+- Sliding windows of **8 s (400 samples), new decision every 1 s**. Breathing is slow (about 0.2–1 Hz), so windows must cover several breaths. Settings live in `features.py`.
 - Simple per-window features for each axis and for the magnitude: mean, standard deviation, range, energy, and dominant frequency / band power.
 - Log-transform positive amplitude features (tip from the task).
 - The features must be computed **identically** on the board, so keep them simple.
+
+### Part 1 result (movement vs. shaking, 3 + 3 sessions of 60 s, leave-one-session-out)
+| Features | Mean accuracy | Worst session |
+|---|---|---|
+| all 8 (per-axis log std ×6, log std of acc magnitude, log mean of gyro magnitude) | 0.814 | 0.000 (`movement_mixed`) |
+| log std of acc magnitude + log mean of gyro magnitude | 0.852 | 0.189 |
+| **log std of acc magnitude only** | **1.000** | **1.000** |
+| per-axis acc log std + log std of acc magnitude | 0.833 | 0.000 |
+
+Tilting the board during hand movement gives as much rotation as shaking, and per-axis features depend on orientation; the acceleration-magnitude spread does not (0.28–0.75 m/s² for movement vs. 2.50–3.03 m/s² for shaking). Caveat: the feature was chosen on the same 6 sessions, so it still needs confirming on new recordings.
 
 ## 4. Training and evaluation (Python)
 - Split by **whole recording** (session), not by window.
@@ -31,9 +41,10 @@ Items marked **(open)** still need a decision. See "Open questions" at the botto
 - Use class weighting if the classes are imbalanced. Report the confusion matrix and per-class accuracy on the held-out sessions.
 
 ## 5. Deployment (board)
-- Export the trained model to C: weights as arrays, or a generated `.h` file (e.g. via `micromlgen`/`everywhereml`, or TFLite Micro for an MLP) **(open)**.
-- On-board loop: sample → ring buffer → features → model → class probabilities → smooth over about 2 s → LED colour.
-- Check that the board's predictions match the Python predictions on the same window.
+- `train.py` exports the scaler and logistic-regression weights as plain arrays to `firmware/include/model.h`.
+- On-board loop: sample → ring buffer → features → model → class probabilities → smooth (average probabilities of the last 3 decisions) → LED colour.
+- `check_board.py` rebuilds windows from the streamed raw samples and compares them with the board: features within 2e-3 (raw samples are printed with 3 decimals), probabilities within 1.5e-6.
+- The same firmware streams raw samples over serial, so `record.py` works with it; the LED shows the prediction meanwhile.
 
 ## 6. Web page from the board (part 4)
 - ESP32 Wi-Fi access point and an HTTP server.
@@ -59,6 +70,6 @@ Items marked **(open)** still need a decision. See "Open questions" at the botto
 
 ## Open questions
 Decided: Arduino + PlatformIO, 50 Hz.
-1. **Model export**: hand-exported weights (default unless told otherwise).
+1. ~~Model export~~: decided, hand-exported weights in `model.h`.
 2. Group members and GitHub repository names.
 3. Extension: postponed.
