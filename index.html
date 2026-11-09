@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MPA-PRM real-time AI on a microcontroller</title>
+<style>
+  body { margin: 0; padding: 32px 20px; background: #14171c; color: #e8ecf1;
+         font: 16px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 660px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  p.lead { color: #97a1af; margin-top: 0; }
+  ul { list-style: none; padding: 0; margin: 24px 0; }
+  li { margin: 10px 0; }
+  a { color: #6ea8ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .card { display: block; background: #1d222a; border: 1px solid #2c333d; border-radius: 10px;
+          padding: 16px; }
+  .card strong { display: block; font-size: 1.05rem; color: #e8ecf1; }
+  .card span { color: #97a1af; font-size: 0.9rem; }
+  .states { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; font-size: 0.85rem; }
+  .state { border-radius: 6px; padding: 6px 10px; }
+  .note { color: #97a1af; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Real-time AI on a microcontroller</h1>
+  <p class="lead">MPA-PRM · ESP32-S3 with an MPU-6050 classifying its own motion and the breathing
+  under it, entirely on the chip.</p>
+
+  <div class="states">
+    <span class="state" style="background:#1faa4b">calm breathing</span>
+    <span class="state" style="background:#e03131">fast breathing</span>
+    <span class="state" style="background:#2f6fd6">not attached</span>
+    <span class="state" style="background:#b833c9">shaking</span>
+  </div>
+
+  <ul>
+    <li><a class="card" href="monitor/"><strong>Open the BLE monitoring station</strong>
+      <span>Connects to the board over Bluetooth Low Energy: live state, timeline and alarms.
+      Chrome or Edge required.</span></a></li>
+    <li><a class="card" href="https://github.com/Krecoe/MPA-PRM_Real-time_microcontroller">
+      <strong>Repository and documentation</strong>
+      <span>Wiring, build and flash, data recording, training, results.</span></a></li>
+  </ul>
+
+  <p class="note">Kristof Krupa · Sebastian Černý — Brno University of Technology.</p>
+</main>
+</body>
+</html>
