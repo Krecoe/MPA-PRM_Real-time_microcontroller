@@ -4,14 +4,14 @@
 //   raw sample lines:  t_ms,ax,ay,az,gx,gy,gz     (read by record.py)
 //   prediction lines:  # P,t_ms,feature...,probability...,state
 //   timing lines:      # T,microseconds for features + network
-// BLE: the smoothed state is sent as UTF-8 text (calm, fast, not_attached, shaking) in a notification
-// after every decision, so the monitoring page also knows the board is alive.
+// BLE (contract in docs/BLE_PROTOCOL.md): after every decision, i.e. once per second, a notification with
+//   {"state":"calm","probs":{"calm":0.91,"fast":0.05,"not_attached":0.03,"shaking":0.01}}
+// The regular rate also tells the monitoring page that the board is alive.
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
-#include <BLE2902.h>
 #include "model.h"
 
 const int SDA_PIN = 10;
@@ -19,9 +19,9 @@ const int SCL_PIN = 11;
 const int LED_PIN = 48;
 const unsigned long SAMPLE_PERIOD_US = 1000000UL / SAMPLE_RATE_HZ;
 const int SMOOTH_DECISIONS = 3;  // average the probabilities of the last 3 windows (3 s) to avoid flicker
-const char* BLE_DEVICE_NAME = "ESP32-Breath";
-const char* BLE_SERVICE_UUID = "6b2f0d10-3c1e-4c8a-9a51-2f6e7b8c9d01";  // must match the monitoring page
-const char* BLE_STATE_UUID = "6b2f0d11-3c1e-4c8a-9a51-2f6e7b8c9d01";
+const char* BLE_DEVICE_NAME = "ESP32-BREATH";
+const char* BLE_SERVICE_UUID = "8e7a1f20-1d0b-4f6a-9c3e-2b5c7d9e1001";  // must match monitor/app.js
+const char* BLE_STATE_UUID = "8e7a1f21-1d0b-4f6a-9c3e-2b5c7d9e1001";
 const float LOG_EPS = 1e-6f;  // "EPS" is already a macro in the ESP32 headers
 
 static_assert(N_FEATURES == 6, "computeFeatures() must produce the features listed in features.py");
@@ -45,6 +45,18 @@ class RestartAdvertisingOnDisconnect : public BLEServerCallbacks {
   }
 };
 
+void publishState(int bestClass, const float smoothed[N_CLASSES]) {
+  char payload[160];
+  int length = snprintf(payload, sizeof(payload), "{\"state\":\"%s\",\"probs\":{", CLASS_NAMES[bestClass]);
+  for (int c = 0; c < N_CLASSES; c++) {
+    length += snprintf(payload + length, sizeof(payload) - length, "%s\"%s\":%.2f",
+                       c > 0 ? "," : "", CLASS_NAMES[c], smoothed[c]);
+  }
+  snprintf(payload + length, sizeof(payload) - length, "}}");
+  stateCharacteristic->setValue((uint8_t*)payload, strlen(payload));
+  stateCharacteristic->notify();
+}
+
 void setupBle() {
   BLEDevice::init(BLE_DEVICE_NAME);
   BLEServer* server = BLEDevice::createServer();
@@ -52,7 +64,6 @@ void setupBle() {
   BLEService* service = server->createService(BLE_SERVICE_UUID);
   stateCharacteristic = service->createCharacteristic(
       BLE_STATE_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-  stateCharacteristic->addDescriptor(new BLE2902());  // lets clients subscribe to notifications
   stateCharacteristic->setValue("starting");
   service->start();
   BLEAdvertising* advertising = BLEDevice::getAdvertising();
@@ -214,20 +225,16 @@ void classifyWindow() {
   memcpy(recentProbabilities[decisionsSeen % SMOOTH_DECISIONS], probabilities, sizeof(probabilities));
   decisionsSeen++;
   int count = min(decisionsSeen, SMOOTH_DECISIONS);
+  float smoothed[N_CLASSES];
   int bestClass = 0;
-  float bestProbability = -1;
   for (int c = 0; c < N_CLASSES; c++) {
-    float average = 0;
-    for (int d = 0; d < count; d++) average += recentProbabilities[d][c];
-    average /= count;
-    if (average > bestProbability) {
-      bestProbability = average;
-      bestClass = c;
-    }
+    smoothed[c] = 0;
+    for (int d = 0; d < count; d++) smoothed[c] += recentProbabilities[d][c];
+    smoothed[c] /= count;
+    if (smoothed[c] > smoothed[bestClass]) bestClass = c;
   }
   showState(CLASS_NAMES[bestClass]);
-  stateCharacteristic->setValue(CLASS_NAMES[bestClass]);
-  stateCharacteristic->notify();
+  publishState(bestClass, smoothed);
 
   Serial.printf("# P,%lu", millis());
   for (int f = 0; f < N_FEATURES; f++) Serial.printf(",%.5f", features[f]);
