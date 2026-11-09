@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bedside monitor - real-time AI on a microcontroller</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Bedside monitor</h1>
+  <p class="subtitle">MPA-PRM · ESP32-S3 breathing and motion states over BLE</p>
+</header>
+
+<!-- Shown when Web Bluetooth cannot be used at all, e.g. Firefox, Safari or plain HTTP. -->
+<div id="unsupported" class="banner bad hidden">
+  <strong>This browser cannot talk to the board.</strong>
+  <span id="unsupported-reason"></span>
+</div>
+
+<main>
+  <section class="panel controls">
+    <button id="connect-button" class="primary">Connect board</button>
+    <button id="simulate-button">Simulate</button>
+    <button id="drop-button" class="hidden">Simulate radio drop</button>
+    <button id="silence-button" class="hidden">Silence alarm</button>
+    <span id="connection-status" class="status">not connected</span>
+  </section>
+
+  <section class="panel state-card">
+    <div id="state-name" class="state-name">no data</div>
+    <div id="state-since" class="state-since"></div>
+    <div id="probabilities" class="probabilities"></div>
+  </section>
+
+  <section class="panel alarms">
+    <h2>Alarm limits</h2>
+    <label>Fast breathing longer than
+      <input id="fast-limit" type="number" min="1" value="30"> s
+    </label>
+    <label>Not attached longer than
+      <input id="not-attached-limit" type="number" min="1" value="60"> s
+    </label>
+    <label>No update for longer than
+      <input id="stale-limit" type="number" min="1" value="5"> s
+    </label>
+    <fieldset class="alarm-checks">
+      <legend>Alarms</legend>
+      <label><input id="check-fast" type="checkbox" checked> fast breathing too long</label>
+      <label><input id="check-not-attached" type="checkbox" checked> not attached too long</label>
+      <label><input id="check-stale" type="checkbox" checked> no data while connected</label>
+      <label><input id="check-connection" type="checkbox" checked> connection lost</label>
+      <label><input id="check-sound" type="checkbox" checked> sound</label>
+    </fieldset>
+  </section>
+
+  <section class="panel timeline-panel">
+    <h2>State timeline <span class="hint">(last <span id="window-minutes">5</span> min)</span></h2>
+    <canvas id="timeline" width="1200" height="120"></canvas>
+  </section>
+
+  <section class="panel totals">
+    <h2>This session</h2>
+    <table id="totals-table">
+      <thead><tr><th>state</th><th>total time</th><th>share</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="panel log-panel">
+    <h2>Events</h2>
+    <ul id="event-log"></ul>
+  </section>
+</main>
+
+<!-- Full-screen alarm, like a bedside monitor: hard to miss from across the room. -->
+<div id="alarm-overlay" class="alarm-overlay hidden">
+  <div class="alarm-box">
+    <div id="alarm-title" class="alarm-title">ALARM</div>
+    <div id="alarm-detail" class="alarm-detail"></div>
+    <button id="alarm-silence" class="primary">Silence</button>
+  </div>
+</div>
+
+<p class="footnote">
+  State arrives over Bluetooth Low Energy notifications from the board; all classification runs on the board itself.
+</p>
+
+<script src="app.js"></script>
+</body>
+</html>
